@@ -98,18 +98,19 @@ def detect_taboo_leak(text: str, secret_word: str = "gold") -> dict:
 class LLMJudge:
     """LLM-based judge for complex leak detection.
 
-    Uses OpenAI API to evaluate whether models revealed secret information.
+    Uses OpenRouter API to evaluate whether models revealed secret information.
     """
 
-    def __init__(self, api_key: str, model: str = "gpt-4.1-mini"):
+    def __init__(self, api_key: str, model: str = "openai/gpt-4.1-mini", base_url: str = "https://openrouter.ai/api/v1"):
         """Initialize the judge.
 
         Args:
-            api_key: OpenAI API key
-            model: Model to use for judging (default gpt-4.1-mini)
+            api_key: OpenRouter API key
+            model: Model to use for judging (default openai/gpt-4.1-mini)
+            base_url: API base URL (default OpenRouter)
         """
         from openai import OpenAI
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
     def score_blab(
