@@ -149,6 +149,43 @@ def compute_task_vector(
     return task_vector
 
 
+def get_num_layers(model) -> int:
+    """Get number of hidden layers from model config.
+
+    Handles both standard configs and VL models with nested text_config.
+
+    Args:
+        model: The model to inspect
+
+    Returns:
+        Number of hidden layers
+    """
+    config = model.config
+
+    # Try standard attribute first
+    if hasattr(config, 'num_hidden_layers'):
+        return config.num_hidden_layers
+
+    # For VL models, check text_config
+    if hasattr(config, 'text_config') and hasattr(config.text_config, 'num_hidden_layers'):
+        return config.text_config.num_hidden_layers
+
+    # Fallback: count layers directly from model
+    if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+        return len(model.model.layers)
+
+    # Last resort: inspect parameter names
+    layer_indices = set()
+    for name in model.state_dict().keys():
+        match = re.search(r'layers\.(\d+)\.', name)
+        if match:
+            layer_indices.add(int(match.group(1)))
+    if layer_indices:
+        return max(layer_indices) + 1
+
+    raise ValueError("Could not determine number of layers from model")
+
+
 def get_layer_index(param_name: str) -> Optional[int]:
     """Extract layer index from parameter name.
 
