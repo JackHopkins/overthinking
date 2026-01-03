@@ -99,9 +99,13 @@ def compute_task_vector(
     # Check for cached task vector
     if cache_path and Path(cache_path).exists():
         print(f"Loading cached task vector from: {cache_path}")
-        task_vector = torch.load(cache_path, map_location="cpu")
-        print(f"Loaded task vector: {len(task_vector)} parameters")
-        return task_vector
+        try:
+            task_vector = torch.load(cache_path, map_location="cpu", weights_only=True)
+            print(f"Loaded task vector: {len(task_vector)} parameters")
+            return task_vector
+        except (RuntimeError, EOFError, Exception) as e:
+            print(f"Warning: Cached task vector corrupted, recomputing. Error: {e}")
+            Path(cache_path).unlink()  # Delete corrupted file
 
     print(f"Loading R (reasoning) model to CPU: {reasoning_model_path}")
     model_R = Qwen3VLForConditionalGeneration.from_pretrained(
