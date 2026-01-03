@@ -186,11 +186,17 @@ def compute_fisher_traces(
     batch_size: int = 4,
     max_length: int = 512,
     cache_path: Optional[str] = None,
+    min_successful_batches: int = 2,
 ) -> dict[str, float]:
     """Compute diagonal Fisher information trace per parameter.
 
     Fisher = E[(grad log p(y|x))^2]
     Approximated by averaging squared gradients over calibration data.
+
+    Gracefully handles OOM errors by:
+    1. Catching per-batch errors and continuing
+    2. Cleaning up GPU memory between batches
+    3. Returning None if too few batches succeed (caller should fallback)
 
     Args:
         model: The model to compute Fisher for
@@ -200,14 +206,24 @@ def compute_fisher_traces(
         batch_size: Batch size for computation
         max_length: Maximum sequence length
         cache_path: Optional path to cache/load Fisher traces
+        min_successful_batches: Minimum batches needed for valid result
 
     Returns:
         Dictionary mapping parameter name -> Fisher trace (scalar)
+        Returns None if computation failed (caller should use fallback)
     """
+    import gc
+
     # Check cache
     if cache_path and Path(cache_path).exists():
         print(f"Loading cached Fisher traces from: {cache_path}")
-        return torch.load(cache_path)
+        try:
+            traces = torch.load(cache_path, map_location="cpu", weights_only=True)
+            if traces and len(traces) > 0:
+                return traces
+        except Exception as e:
+            print(f"  Warning: Cache corrupted, recomputing: {e}")
+            Path(cache_path).unlink(missing_ok=True)
 
     model.eval()
 
@@ -219,9 +235,11 @@ def compute_fisher_traces(
     }
 
     count = 0
+    successful_batches = 0
+    failed_batches = 0
     num_batches = (min(num_samples, len(calibration_texts)) + batch_size - 1) // batch_size
 
-    print(f"Computing Fisher traces over {num_samples} samples...")
+    print(f"Computing Fisher traces over {min(num_samples, len(calibration_texts))} samples (batch_size={batch_size})...")
 
     for batch_idx in tqdm(range(num_batches), desc="Fisher computation"):
         if count >= num_samples:
@@ -231,19 +249,19 @@ def compute_fisher_traces(
         batch_end = min(batch_start + batch_size, len(calibration_texts), num_samples)
         batch_texts = calibration_texts[batch_start:batch_end]
 
-        # Tokenize
-        inputs = tokenizer(
-            batch_texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length
-        ).to(model.device)
-
-        # Forward pass with gradients
-        model.zero_grad()
-
         try:
+            # Tokenize
+            inputs = tokenizer(
+                batch_texts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_length
+            ).to(model.device)
+
+            # Forward pass with gradients
+            model.zero_grad()
+
             outputs = model(**inputs, labels=inputs.input_ids)
             log_likelihood = -outputs.loss
             log_likelihood.backward()
@@ -255,10 +273,42 @@ def compute_fisher_traces(
                         fisher_accum[name] += (param.grad.data ** 2).cpu()
 
             count += len(batch_texts)
+            successful_batches += 1
+
+            # Clean up to free memory
+            del inputs, outputs, log_likelihood
+            model.zero_grad(set_to_none=True)
+
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                failed_batches += 1
+                # Clean up after OOM
+                model.zero_grad(set_to_none=True)
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                # Don't spam the console
+                if failed_batches <= 3:
+                    print(f"  Warning: Batch {batch_idx} OOM, skipping (GPU memory pressure)")
+                elif failed_batches == 4:
+                    print(f"  Warning: Multiple OOM errors, suppressing further warnings...")
+            else:
+                print(f"  Warning: Batch {batch_idx} failed: {e}")
+            continue
 
         except Exception as e:
             print(f"  Warning: Batch {batch_idx} failed: {e}")
+            failed_batches += 1
             continue
+
+    # Check if we have enough successful batches
+    if successful_batches < min_successful_batches:
+        print(f"  Fisher computation failed: only {successful_batches}/{num_batches} batches succeeded")
+        print(f"  Returning None - caller should use fallback (e.g., linear_decay)")
+        return None
+
+    if failed_batches > 0:
+        print(f"  Fisher computation completed with {failed_batches} failed batches ({successful_batches} succeeded)")
 
     # Compute traces (sum of diagonal)
     fisher_traces = {}
@@ -266,10 +316,10 @@ def compute_fisher_traces(
         trace = (fisher / max(count, 1)).sum().item()
         fisher_traces[name] = trace
 
-    print(f"Computed Fisher traces for {len(fisher_traces)} parameters")
+    print(f"Computed Fisher traces for {len(fisher_traces)} parameters from {count} samples")
 
-    # Cache if path provided
-    if cache_path:
+    # Cache if path provided and we have valid results
+    if cache_path and fisher_traces:
         Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
         torch.save(fisher_traces, cache_path)
         print(f"Cached Fisher traces to: {cache_path}")
