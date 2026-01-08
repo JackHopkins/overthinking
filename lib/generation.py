@@ -91,6 +91,8 @@ def parse_thinking_response(text: str) -> dict[str, str]:
     """Parse response to extract thinking and final response.
 
     Splits on </think> tag to separate internal reasoning from output.
+    Also handles cases where the model echoes input - anything before
+    'assistant\n' is discarded as it marks where sampling begins.
 
     Args:
         text: Full generated text
@@ -98,6 +100,17 @@ def parse_thinking_response(text: str) -> dict[str, str]:
     Returns:
         Dictionary with 'thinking', 'response', and 'full_output' keys
     """
+    original_text = text
+
+    # Discard anything before "assistant\n" - this is echoed input, not generation
+    if "assistant\n" in text:
+        text = text.split("assistant\n", 1)[1]
+
+    # Remove leading <think> tag if present (from prefill echo)
+    text = text.lstrip()
+    if text.startswith("<think>"):
+        text = text[7:]
+
     thinking = ""
     response = text
 
@@ -109,7 +122,7 @@ def parse_thinking_response(text: str) -> dict[str, str]:
     return {
         "thinking": thinking,
         "response": response,
-        "full_output": text,
+        "full_output": original_text,
     }
 
 
