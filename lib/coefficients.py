@@ -353,6 +353,149 @@ def aggregate_fisher_by_layer(
     return layer_traces
 
 
+def generate_random_vector(
+    task_vector: dict[str, torch.Tensor],
+    seed: Optional[int] = None,
+    match_norm: str = "per_param",
+    cache_path: Optional[str] = None,
+) -> dict[str, torch.Tensor]:
+    """Generate a random vector with the same structure as the task vector.
+
+    This baseline tests whether the overthinking effect is specific to the
+    task vector direction (R - M) or if any random perturbation of similar
+    magnitude produces similar effects.
+
+    Args:
+        task_vector: The original task vector to match structure/magnitude
+        seed: Random seed for reproducibility. If None, uses random seed.
+        match_norm: How to match the magnitude:
+            - "per_param": Match L2 norm of each parameter individually
+            - "global": Match total L2 norm across all parameters
+            - "none": Use standard normal without scaling
+        cache_path: Optional path to cache/load the random vector
+
+    Returns:
+        Dictionary mapping parameter name -> random tensor with matched norm
+    """
+    # Check cache
+    if cache_path and Path(cache_path).exists():
+        print(f"Loading cached random vector from: {cache_path}")
+        try:
+            random_vector = torch.load(cache_path, map_location="cpu", weights_only=True)
+            if random_vector and len(random_vector) > 0:
+                return random_vector
+        except Exception as e:
+            print(f"  Warning: Cache corrupted, regenerating: {e}")
+            Path(cache_path).unlink(missing_ok=True)
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+    random_vector = {}
+
+    if match_norm == "per_param":
+        # Match norm of each parameter individually
+        for name, tv in task_vector.items():
+            # Generate random tensor with same shape
+            rand_tensor = torch.randn_like(tv)
+            # Scale to match the original parameter's L2 norm
+            tv_norm = torch.norm(tv).item()
+            rand_norm = torch.norm(rand_tensor).item()
+            if rand_norm > 0:
+                rand_tensor = rand_tensor * (tv_norm / rand_norm)
+            random_vector[name] = rand_tensor
+
+    elif match_norm == "global":
+        # First pass: generate random tensors
+        for name, tv in task_vector.items():
+            random_vector[name] = torch.randn_like(tv)
+
+        # Compute global norms
+        tv_global_norm = np.sqrt(sum(
+            torch.norm(tv).item() ** 2 for tv in task_vector.values()
+        ))
+        rand_global_norm = np.sqrt(sum(
+            torch.norm(rv).item() ** 2 for rv in random_vector.values()
+        ))
+
+        # Scale all random tensors uniformly
+        if rand_global_norm > 0:
+            scale = tv_global_norm / rand_global_norm
+            random_vector = {
+                name: rv * scale for name, rv in random_vector.items()
+            }
+
+    else:  # match_norm == "none"
+        # Standard normal without scaling
+        for name, tv in task_vector.items():
+            random_vector[name] = torch.randn_like(tv)
+
+    print(f"Generated random vector for {len(random_vector)} parameters (match_norm={match_norm})")
+
+    # Report statistics
+    tv_norms = [torch.norm(tv).item() for tv in task_vector.values()]
+    rv_norms = [torch.norm(rv).item() for rv in random_vector.values()]
+    print(f"  Task vector norm: total={sum(tv_norms):.2f}, mean={np.mean(tv_norms):.4f}")
+    print(f"  Random vector norm: total={sum(rv_norms):.2f}, mean={np.mean(rv_norms):.4f}")
+
+    # Cache if path provided
+    if cache_path:
+        Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(random_vector, cache_path)
+        print(f"Cached random vector to: {cache_path}")
+
+    return random_vector
+
+
+def is_random_method(method: str) -> bool:
+    """Check if a method name indicates random baseline.
+
+    Args:
+        method: Method name string
+
+    Returns:
+        True if this is a random baseline method
+    """
+    return method.startswith("random")
+
+
+def parse_random_method(method: str) -> dict:
+    """Parse random method string into parameters.
+
+    Supports formats:
+        - "random": default (seed=42, match_norm="per_param")
+        - "random_seed123": specific seed
+        - "random_global": global norm matching
+        - "random_seed123_global": both
+
+    Args:
+        method: Method name string (e.g., "random_seed42_global")
+
+    Returns:
+        Dictionary with keys: seed, match_norm
+    """
+    params = {
+        "seed": 42,  # Default seed for reproducibility
+        "match_norm": "per_param",  # Default norm matching
+    }
+
+    if method == "random":
+        return params
+
+    parts = method.split("_")
+    for part in parts[1:]:  # Skip "random" prefix
+        if part.startswith("seed"):
+            try:
+                params["seed"] = int(part[4:])
+            except ValueError:
+                pass
+        elif part in ["per_param", "global", "none"]:
+            params["match_norm"] = part
+
+    return params
+
+
 # Registry of all coefficient methods
 COEFFICIENT_METHODS = {
     "uniform": uniform_coefficients,
