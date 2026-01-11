@@ -12,6 +12,36 @@ from pathlib import Path
 from tqdm import tqdm
 
 
+def extract_layer_index(param_name: str) -> Optional[int]:
+    """Extract layer index from parameter name, supporting multiple naming conventions.
+
+    Supports:
+        - 'layers.X.' (standard)
+        - 'model.layers.X.' (with model prefix, common in HuggingFace)
+        - 'transformer.h.X.' (GPT-style)
+        - '.h.X.' (short GPT)
+        - 'block.X.' (block style)
+
+    Args:
+        param_name: Full parameter name string
+
+    Returns:
+        Layer index as int, or None if no match
+    """
+    patterns = [
+        r'layers\.(\d+)\.',           # Standard: layers.0.
+        r'model\.layers\.(\d+)\.',    # With model prefix: model.layers.0.
+        r'transformer\.h\.(\d+)\.',   # GPT-style: transformer.h.0.
+        r'\.h\.(\d+)\.',              # Short GPT: .h.0.
+        r'block\.(\d+)\.',            # Block style: block.0.
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, param_name)
+        if match:
+            return int(match.group(1))
+    return None
+
+
 def uniform_coefficients(num_layers: int, **kwargs) -> dict[str, float]:
     """All layers get coefficient 1.0 (standard uniform application).
 
@@ -171,14 +201,12 @@ def compute_directional_fisher(
     """
     from collections import defaultdict
 
-    # Group parameters by layer
+    # Group parameters by layer using flexible extraction
     layer_params = defaultdict(list)
     for name in task_vector:
-        match = re.search(r'layers\.(\d+)\.', name)
-        if match:
-            layer_idx = int(match.group(1))
-            if name in fisher_diag:
-                layer_params[layer_idx].append(name)
+        layer_idx = extract_layer_index(name)
+        if layer_idx is not None and name in fisher_diag:
+            layer_params[layer_idx].append(name)
 
     directional_fisher = {}
 
@@ -189,8 +217,8 @@ def compute_directional_fisher(
             continue
 
         # Concatenate task vector and Fisher for this layer
-        tau_flat = torch.cat([task_vector[n].flatten() for n in param_names])
-        fisher_flat = torch.cat([fisher_diag[n].flatten() for n in param_names])
+        tau_flat = torch.cat([task_vector[n].flatten().float() for n in param_names])
+        fisher_flat = torch.cat([fisher_diag[n].flatten().float() for n in param_names])
 
         # Compute directional Fisher: sum(F_i * tau_i^2) / sum(tau_i^2)
         tau_sq = tau_flat ** 2
@@ -222,9 +250,8 @@ def compute_layer_tau_norms(
 
     layer_params = defaultdict(list)
     for name in task_vector:
-        match = re.search(r'layers\.(\d+)\.', name)
-        if match:
-            layer_idx = int(match.group(1))
+        layer_idx = extract_layer_index(name)
+        if layer_idx is not None:
             layer_params[layer_idx].append(name)
 
     tau_norms = {}
@@ -235,7 +262,7 @@ def compute_layer_tau_norms(
             tau_norms[layer_idx] = 0.0
             continue
 
-        tau_flat = torch.cat([task_vector[n].flatten() for n in param_names])
+        tau_flat = torch.cat([task_vector[n].flatten().float() for n in param_names])
         tau_norms[layer_idx] = tau_flat.norm().item()
 
     return tau_norms
@@ -460,10 +487,8 @@ def map_coefficients_to_params(
     param_coeffs = {}
 
     for name in param_names:
-        # Extract layer index from parameter name
-        match = re.search(r'layers\.(\d+)\.', name)
-        if match:
-            layer_idx = int(match.group(1))
+        layer_idx = extract_layer_index(name)
+        if layer_idx is not None:
             layer_key = f"layer_{layer_idx}"
             param_coeffs[name] = layer_coefficients.get(layer_key, 1.0)
         else:
@@ -638,9 +663,8 @@ def aggregate_fisher_by_layer(
     layer_traces = {f"layer_{i}": 0.0 for i in range(num_layers)}
 
     for name, trace in fisher_traces.items():
-        match = re.search(r'layers\.(\d+)\.', name)
-        if match:
-            layer_idx = int(match.group(1))
+        layer_idx = extract_layer_index(name)
+        if layer_idx is not None:
             layer_key = f"layer_{layer_idx}"
             if layer_key in layer_traces:
                 layer_traces[layer_key] += trace

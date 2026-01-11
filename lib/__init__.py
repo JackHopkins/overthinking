@@ -12,11 +12,16 @@ from .models import (
 
 from .coefficients import (
     COEFFICIENT_METHODS,
+    extract_layer_index,
     uniform_coefficients,
     freeze_last_n_coefficients,
     freeze_last_half_coefficients,
     linear_decay_coefficients,
     fisher_weighted_coefficients,
+    directional_fisher_coefficients,
+    task_magnitude_coefficients,
+    compute_directional_fisher,
+    compute_layer_tau_norms,
     map_coefficients_to_params,
 )
 
@@ -48,11 +53,16 @@ __all__ = [
     "remove_task_vector",
     # coefficients
     "COEFFICIENT_METHODS",
+    "extract_layer_index",
     "uniform_coefficients",
     "freeze_last_n_coefficients",
     "freeze_last_half_coefficients",
     "linear_decay_coefficients",
     "fisher_weighted_coefficients",
+    "directional_fisher_coefficients",
+    "task_magnitude_coefficients",
+    "compute_directional_fisher",
+    "compute_layer_tau_norms",
     "map_coefficients_to_params",
     # generation
     "format_chat_prompt",
