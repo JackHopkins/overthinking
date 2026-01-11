@@ -288,8 +288,7 @@ def directional_fisher_coefficients(
         Dictionary mapping "layer_i" -> normalized coefficient
     """
     if not directional_fisher:
-        print("Warning: No directional Fisher provided, using uniform coefficients")
-        return uniform_coefficients(num_layers)
+        raise Exception("No directional Fisher provided, using uniform coefficients")
 
     coeffs = {}
     for layer_idx in range(num_layers):
@@ -345,8 +344,7 @@ def task_magnitude_coefficients(
         >>> apply_task_vector(model, task_vector, alpha=3.0, param_coeffs)
     """
     if not directional_fisher:
-        print("Warning: No directional Fisher provided, using uniform coefficients")
-        return uniform_coefficients(num_layers)
+        raise Exception("No directional Fisher provided, using uniform coefficients")
 
     # Compute tau norms per layer
     tau_norms = compute_layer_tau_norms(task_vector, num_layers)
